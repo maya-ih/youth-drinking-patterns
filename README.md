@@ -1,2 +1,2 @@
 # youth-drinking-patterns
-Cox regression model for predicting alcohol use progression in a longitudinal youth cohort
+Cox regression model for predicting alcohol use initiation in a longitudinal youth cohort
