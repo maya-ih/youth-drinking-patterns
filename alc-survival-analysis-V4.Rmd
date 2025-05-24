@@ -1,0 +1,646 @@
+---
+title: 'alc-survival-analysis'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries}
+library(tidyverse)
+library(table1)
+library(survival)
+library(ggsurvfit)
+library(broom)
+library(zoo)
+library(purrr)
+```
+
+```{r read in data}
+sui <- read.csv('su_y_sui.csv')
+mypi <- read.csv('su_y_mypi.csv')
+dem <- read.csv('abcd_p_demo.csv')
+su_rules <- read.csv('su_p_pr.csv')
+alc_exp <- read.csv('su_y_alc_exp.csv')
+safety <- read.csv('ce_p_nsc.csv')
+fam <- read.csv('ce_y_fes.csv')
+dem2 <- read.csv('abcd_y_lt.csv')
+fhx <- read.csv('mh_p_fhx.csv')
+avail <- read.csv('su_p_crpf.csv')
+peer <- read.csv('su_y_peerdevia.csv')
+cohesion <- read.csv('ce_p_comc.csv')
+```
+
+
+```{r extract relevant variables}
+# yearly SU interview
+sui_alc <- sui %>% select(src_subject_id,
+                          eventname,
+                          su_today,                   # date of baseline interview
+                          tlfb_alc_sip,               # lifetime alc sip
+                          tlfb_alc_use,               # lifetime alc use
+                          tlfb_alc_reg,               # lifetime reg alc use
+                          tlfb_mj_drink_use,          # lifetime MJ+alc drink use (ignored this)
+                          tlfb_alc_sip_l,             # sip in last six months?
+                          tlfb_alc_use_l)             # full drink in last six months?
+
+# mid-year SU phone interview
+mypi_alc <- mypi %>% select(src_subject_id,
+                            eventname,
+                            mypi_completion_date,
+                            mypi_alc_full_drink,      # any drink in last 6 months?
+                            mypi_alc_sip,             # any sip in last 6 months?
+                            mypi_alc_ceremony_drink,  # drink (non-ceremonial) in last 6 months?
+                            mypi_alc_sip_1b,          # sip (non-ceremonial) in last 6 months?
+                            mypi_alc_drink_used,      # >= 5 drinks in last 6 months?
+                            mypi_alc_sip_use,         # >= 5 sips in last 6 months?
+                            mypi_alc_first)           # first sip or drink ever?
+
+# demographics
+dem <- dem %>% select(src_subject_id,
+                      eventname,
+                      demo_brthdat_v2,                # age at baseline
+                      demo_brthdat_v2_l,              # age at follow up
+                      demo_sex_v2,                    # sex assigned at birth
+                      demo_gender_id_v2,              # gender at baseline
+                      demo_gender_id_v2_l,            # gender at follow up
+                      demo_race_a_p___10,             # white
+                      demo_race_a_p___11,             # Black
+                      demo_race_a_p___12,             # Native American
+                      demo_race_a_p___13,             # Alaska Native
+                      demo_race_a_p___14,             # Native Hawaiian
+                      demo_race_a_p___15,             # Guamanian
+                      demo_race_a_p___16,             # Samoan
+                      demo_race_a_p___17,             # other PI
+                      demo_race_a_p___18,             # Asian - Indian
+                      demo_race_a_p___19,             # Chinese
+                      demo_race_a_p___20,             # Filipino
+                      demo_race_a_p___21,             # Japanese
+                      demo_race_a_p___22,             # Korean
+                      demo_race_a_p___23,             # Vietnamese
+                      demo_race_a_p___24,             # other Asian
+                      demo_race_a_p___25,             # other race
+                      demo_race_a_p___77,             # refuse to answer
+                      demo_race_a_p___99,             # don't know race
+                      demo_ethn_v2,                   # Hispanic/Latino
+                      demo_comb_income_v2,            # family income at baseline
+                      demo_comb_income_v2_l,          # family income at follow up
+                      demo_relig_v2,                  # religion at baseline
+                      demo_relig_v2_l)                # religion at follow up
+
+# parental SU rules
+su_rules <- su_rules %>% select(src_subject_id,
+                                  eventname,
+                                  parent_rules_q1,    # rules for drinking
+                                  parent_rules_q1a,   # who it applies to
+                                  parent_rules_q2)    # penalties for violating?
+
+# youth alcohol expectancies - only collected during regular yearly survey
+alc_exp <- alc_exp %>% select(src_subject_id,
+                              eventname,
+                              aeq_positive_expectancies_ss,  # strength of + expectancies for alcohol
+                              aeq_negative_expectancies_ss)  # strength of - expectancies for alcohol
+
+# neighborhood safety - only collected during regular yearly survey
+safety <- safety %>% select(src_subject_id,
+                            eventname,
+                            nsc_p_ss_mean_3_items) # neighborhood safety protocol, mean of parent report
+
+# family dynamics - only collected during regular yearly survey
+fam <- fam %>% select(src_subject_id,
+                      eventname,
+                      fes_y_ss_fc_pr) # conflict subscale from family environment scale, prorated score
+
+# interview dates + age at each interview
+dem2 <- dem2 %>% select(src_subject_id,
+                        eventname,
+                        interview_date,
+                        interview_age)
+
+# parental alcohol use - only collected at baseline
+fhx <- fhx %>% select(src_subject_id,
+                      eventname,
+                      famhx_ss_moth_prob_alc_p,     # alcohol problem - mother
+                      famhx_ss_fath_prob_alc_p,     # alcohol problem - father
+                      famhx_ss_momdad_alc_p)        # alcohol problem - either
+
+# alc availability (baseline + yearly followups)
+avail <- avail %>% select(src_subject_id,
+                          eventname,
+                          su_risk_p_1)              # alcohol ease of access - parent POV
+
+# perceived peer alc use
+peer <- peer %>% select(src_subject_id,
+                        eventname,
+                        peer_deviance_2_dd1457,     # how many peers drink? (baseline only)
+                        peer_deviance_3_e1ec2e,     # how many peers get drunk? (baseline only)
+                        peer_deviance_2_l,          # how many friends drink? (yearly followups)
+                        peer_deviance_3_l)          # how many friends get drunk? (yearly followups)
+
+# community cohesion (year 2 & 4 follow ups)
+cohesion <- cohesion %>% select(src_subject_id,
+                                eventname,
+                                comc_ss_cohesion_p) # community cohesion score - parent POV
+```
+
+```{r join & clean data}
+# join dfs
+merged_df <- list(sui_alc, mypi_alc, dem, su_rules, alc_exp, safety, fam, dem2, fhx, avail, peer, cohesion) %>%
+  reduce(full_join, by = c('src_subject_id', 'eventname'))
+
+# consolidate date, alc use, & dem vars
+clean_df <- merged_df %>%
+  group_by(src_subject_id) %>%
+  mutate(
+    # not excluding alc use during religious ceremony due to missingness
+    sip = ifelse(eventname == 'baseline_year_1_arm_1', tlfb_alc_sip,
+                 ifelse(grepl('year_follow_up', eventname), tlfb_alc_sip_l, mypi_alc_sip)),
+    drink = ifelse(eventname == 'baseline_year_1_arm_1', tlfb_alc_use,
+                 ifelse(grepl('year_follow_up', eventname), tlfb_alc_use_l, mypi_alc_full_drink)),
+    age = interview_age,
+    sex = ifelse(eventname == 'baseline_year_1_arm_1', demo_sex_v2, NA),
+    gender = ifelse(eventname == 'baseline_year_1_arm_1', demo_gender_id_v2, demo_gender_id_v2_l),
+    race = case_when(
+      rowSums(across(starts_with('demo_race_a_p___'), ~ . == 1), na.rm = TRUE) > 1 | demo_race_a_p___25 == 1 | demo_race_a_p___12 == 1 |
+        demo_race_a_p___13 == 1 ~ 4, # more than one race or other race
+      demo_race_a_p___10 == 1 ~ 1,  # white
+      demo_race_a_p___11 == 1 ~ 2,  # Black
+      demo_race_a_p___14 == 1 | demo_race_a_p___15 == 1 | demo_race_a_p___16 == 1 | demo_race_a_p___17 == 1 | demo_race_a_p___18 == 1 |
+        demo_race_a_p___19 == 1 | demo_race_a_p___20 == 1 | demo_race_a_p___21 == 1 |
+        demo_race_a_p___22 == 1 | demo_race_a_p___23 == 1 | demo_race_a_p___24 == 1 ~ 4,  # Asian/PI (grouped with other)
+      demo_race_a_p___77 == 1 | demo_race_a_p___99 == 1 ~ 999,  # refuse to answer or don't know
+      TRUE ~ NA_real_
+    ),
+    hispanic = ifelse(eventname == 'baseline_year_1_arm_1', demo_ethn_v2, NA),
+    income = ifelse(eventname == 'baseline_year_1_arm_1', demo_comb_income_v2, demo_comb_income_v2_l),
+    religion = ifelse(eventname == 'baseline_year_1_arm_1', demo_relig_v2, demo_relig_v2_l),
+    alc_rules = parent_rules_q1,
+    date = ifelse(grepl('_year_', eventname), interview_date, mypi_completion_date),
+    mother_alc = famhx_ss_moth_prob_alc_p,
+    father_alc = famhx_ss_fath_prob_alc_p,
+    parent_alc = famhx_ss_momdad_alc_p,
+    alc_availability = su_risk_p_1,
+    peer_use = peer_deviance_2_l,
+    c_cohesion = comc_ss_cohesion_p
+  ) %>%
+  # sex, race, hispanic, and parental alc use were only collected at baseline
+  fill(sex, race, hispanic, mother_alc, father_alc, parent_alc, .direction = 'downup') %>%
+  ungroup() %>%
+  select(src_subject_id,
+         eventname,
+         date,
+         sip,
+         drink,
+         age,
+         sex,
+         gender,
+         race,
+         hispanic,
+         income,
+         religion,
+         alc_rules,
+         mother_alc,
+         father_alc,
+         parent_alc,
+         aeq_positive_expectancies_ss,
+         aeq_negative_expectancies_ss,
+         nsc_p_ss_mean_3_items,
+         fes_y_ss_fc_pr,
+         alc_availability,
+         peer_use,
+         c_cohesion)
+
+# convert 777 (refused to answer) and 999 (don't know) to NA for all covariates
+clean_df <- clean_df %>%
+  mutate(across(everything(), ~ ifelse(. == 777 | . == 999, NA, .))) 
+```
+
+
+```{r imputations}
+# factor eventname
+clean_df <- clean_df %>% mutate(
+  eventname = factor(eventname,
+                     levels = c('baseline_year_1_arm_1',
+                                '6_month_follow_up_arm_1',
+                                '1_year_follow_up_y_arm_1',
+                                '18_month_follow_up_arm_1',
+                                '2_year_follow_up_y_arm_1',
+                                '30_month_follow_up_arm_1',
+                                '3_year_follow_up_y_arm_1',
+                                '42_month_follow_up_arm_1',
+                                '4_year_follow_up_y_arm_1'))
+)
+
+# arrange rows by id and eventname
+clean_df <- clean_df %>%
+  arrange(src_subject_id, eventname) 
+
+# impute covariates collected once a year
+clean_df <- clean_df %>%
+  group_by(src_subject_id) %>%
+  arrange(eventname, .by_group = TRUE) %>%
+  mutate(
+    income = na.locf(income, na.rm = FALSE),
+    religion = na.locf(religion, na.rm = FALSE),
+    alc_rules = na.locf(alc_rules, na.rm = FALSE),
+    pos_expectancies = na.locf(aeq_positive_expectancies_ss, na.rm = FALSE),
+    neg_expectancies = na.locf(aeq_negative_expectancies_ss, na.rm = FALSE),
+    neighborhood_safety = na.locf(nsc_p_ss_mean_3_items, na.rm = FALSE),
+    fam_conflict = na.locf(fes_y_ss_fc_pr, na.rm = FALSE),
+    alc_availability = na.locf(alc_availability, na.rm = FALSE),
+    peer_use = na.locf(peer_use, na.rm = FALSE),
+    c_cohesion = na.locf(c_cohesion, fromLast = TRUE, na.rm = FALSE)
+  ) %>%
+  ungroup()
+
+# how many have missing interview date?
+clean_df$date <- as.Date(clean_df$date, format = ifelse(grepl('/', clean_df$date), '%m/%d/%Y', '%Y-%m-%d'))
+missing_date <- clean_df %>% filter(is.na(date))
+length(unique(missing_date$src_subject_id)) # one participant - NDAR_INV749XW1TD (I exclude them later)
+```
+
+```{r regrouping}
+# regroup religion and alc_rules
+clean_df <- clean_df %>%
+  mutate(
+    religion = case_when(
+      religion %in% c(1, 2, 3, 4, 11, 12, 13) ~ 1, # christian
+      religion == 5 ~ 2,  # jewish
+      religion == 6 ~ 3,  # mormon
+      religion == 7 ~ 4,  # jehovahs
+      religion == 8 ~ 5,  # muslim
+      religion == 9 ~ 6,  # buddhist
+      religion == 10 ~ 7, # hindu
+      religion %in% c(14, 15, 17) ~ 8, # non-religious
+      religion == 16 ~ 9, # other
+      TRUE ~ religion
+    ),
+    alc_rules = case_when(
+      alc_rules %in% c(2, 3, 4) ~ 2, # allowed
+      alc_rules %in% c(5, 6) ~ 3,    # no rules
+      TRUE ~ alc_rules
+    ),
+    income = case_when(
+      income %in% c(1, 2, 3, 4, 5, 6) ~ 1,
+      income %in% c(7, 8) ~ 2,
+      income %in% c(9, 10) ~ 3,
+      TRUE ~ income
+    ),
+    alc_availability = case_when(
+      alc_availability %in% c(0, 1) ~ 1,  # difficult
+      alc_availability %in% c(2, 3) ~ 2,  # easy
+      alc_availability == 4 ~ NA,
+      TRUE ~ alc_availability
+    ),
+    peer_use = case_when(
+      peer_use == 0 ~ peer_use,
+      peer_use %in% c(1, 2, 3, 4) ~ 1,
+      TRUE ~ peer_use
+    )
+  )
+```
+
+```{r factoring}
+# factor categorical covariates
+clean_df <- clean_df %>% mutate(
+  sex = factor(sex,
+               levels = c(1, 2, 3),
+               labels = c('male',
+                          'female',
+                          'intersex_male')),
+  gender = factor(gender,
+                  levels = c(1, 2, 3, 4, 5, 6),
+                  labels = c('male',
+                             'female',
+                             'trans_male',
+                             'trans_female',
+                             'genderqueer',
+                             'other')),
+  race = factor(race,
+                levels = c(1, 2, 3, 4),
+                labels = c('white',
+                           'black',
+                           'asian_pi',
+                           'other')),
+  hispanic = factor(hispanic,
+                    levels = c(1, 2),
+                    labels = c('yes',
+                               'no')),
+  income = factor(income,
+                  levels = c(1, 2, 3),
+                  labels = c('<50k',
+                             '50-100k',
+                             '>100k')),
+  religion = factor(religion,
+                    levels = c(1, 2, 3, 4, 5, 6, 7, 8, 9),
+                    labels = c('christian',
+                               'jewish',
+                               'mormon',
+                               'jehovahs',
+                               'muslim',
+                               'buddhist',
+                               'hindu',
+                               'non-religious',
+                               'other')),
+  alc_rules = factor(alc_rules,
+                 levels = c(1, 2, 3),
+                 labels = c('not_allowed',
+                            'allowed',
+                            'no_rules')),
+  mother_alc = factor(mother_alc,
+                      levels = c(0, 1),
+                      labels = c('no',
+                                 'yes')),
+  father_alc = factor(father_alc,
+                      levels = c(0, 1),
+                      labels = c('no',
+                                 'yes')),
+  parent_alc = factor(parent_alc,
+                      levels = c(0, 1),
+                      labels = c('no',
+                                 'yes')),
+  alc_availability = factor(alc_availability,
+                      levels = c(1, 2),
+                      labels = c('difficult',
+                                 'easy')),
+  peer_use = factor(peer_use,
+                      levels = c(0, 1),
+                      labels = c('no',
+                                 'yes'))
+)
+```
+
+
+```{r first sip/drink indicator}
+# create first_sip and first_drink
+clean_df <- clean_df %>%
+  group_by(src_subject_id) %>%
+  mutate(
+    first_sip = as.integer(ifelse(sip == 1 & cumsum(replace_na(sip, 0)) == 1, 1, 0)),
+    first_drink = as.integer(ifelse(drink == 1 & cumsum(replace_na(drink, 0)) == 1, 1, 0))
+  ) %>%
+  ungroup()
+
+# set first_sip and first_drink equal to 0 after first first occurrence of 1
+clean_df <- clean_df %>%
+  group_by(src_subject_id) %>%
+  mutate(
+    first_sip = ifelse(cumsum(replace_na(first_sip, 0)) > 1, 0, first_sip),
+    first_drink = ifelse(cumsum(replace_na(first_drink, 0)) > 1, 0, first_drink),
+    first_sip = ifelse(lag(cumsum(first_sip == 1), default = 0) == 1 & is.na(first_sip), 0, first_sip),
+    first_drink = ifelse(lag(cumsum(first_drink == 1), default = 0) == 1 & is.na(first_drink), 0, first_drink)
+  ) %>%
+  ungroup()
+```
+
+```{r key frequencies}
+# separate participants who did and didn't report sipping at baseline
+sip_at_baseline <- clean_df %>% filter(eventname == 'baseline_year_1_arm_1' & sip == 1)
+no_sip_at_baseline <- clean_df %>% filter(eventname == 'baseline_year_1_arm_1' & sip == 0)
+sip_at_baseline_is_na <- clean_df %>% filter(eventname == 'baseline_year_1_arm_1' & is.na(sip))
+length(unique(sip_at_baseline$src_subject_id)) # 2670
+length(unique(no_sip_at_baseline$src_subject_id)) # 8743
+length(unique(sip_at_baseline_is_na$src_subject_id)) # 454
+
+sip_at_baseline_df <- clean_df %>% filter(src_subject_id %in% sip_at_baseline$src_subject_id)
+no_sip_at_baseline_df <- clean_df %>% filter(src_subject_id %in% no_sip_at_baseline$src_subject_id)
+
+# non-naive participants
+## did not have a full drink at baseline
+no_drink_at_baseline <- sip_at_baseline_df %>% filter(eventname == 'baseline_year_1_arm_1' & drink == 0) # N=2649
+not_naive_df <- sip_at_baseline_df %>% filter(src_subject_id %in% no_drink_at_baseline$src_subject_id)
+
+### how many later had full drink?
+nn_had_drink <- not_naive_df %>% filter(eventname != 'baseline_year_1_arm_1' & first_drink == 1) # N=198
+
+### how many events (drinks) are in the mid-year survey vs. regular yearly?
+table(nn_had_drink$eventname) # 108 in mid-year; 90 in regular yearly
+
+## had a full drink at baseline (excluded in line 244)
+drink_at_baseline <- sip_at_baseline_df %>% filter(eventname == 'baseline_year_1_arm_1' & drink == 1)
+drink_at_baseline # N=21
+
+# naive participants
+## had a sip during the study period
+sip_during_study <- no_sip_at_baseline_df %>% filter(first_sip == 1)
+naive_df <- no_sip_at_baseline_df %>% filter(src_subject_id %in% sip_during_study$src_subject_id)
+length(unique(naive_df$src_subject_id)) # N=1602
+
+## how many later developed full alcohol drink?
+naive_had_drink <- naive_df %>% filter(first_drink == 1) # N=152
+
+## check how many events are in the mid-year survey vs. regular yearly?
+table(naive_had_drink$eventname) # 64 in mid-year; 88 in regular yearly
+
+## did not have a sip through the study period (excluded in line 259)
+no_sip_during_study <- no_sip_at_baseline_df %>% filter(!(src_subject_id %in% sip_during_study$src_subject_id))
+length(unique(no_sip_during_study$src_subject_id)) # N=7141
+```
+
+```{r time intervals}
+# create start and stop dates
+naive_df <- naive_df %>%
+  group_by(src_subject_id) %>%
+  mutate(end_date = date,
+         start_date = lag(end_date)) %>% 
+  ungroup() %>% filter(eventname != 'baseline_year_1_arm_1')
+
+# remove rows before first sip and after event (first drink) for each participant
+naive_df_clean <- naive_df %>%
+  group_by(src_subject_id) %>%
+  filter(
+    row_number() >= ifelse(any(first_sip == 1), which.max(first_sip), 1) &
+    row_number() <= ifelse(any(first_drink == 1), which.max(first_drink), n())
+  ) %>%
+  ungroup()
+
+# flag first record of each participant
+naive_df_clean <- naive_df_clean %>%
+  group_by(src_subject_id) %>%
+  mutate(first_record_flag = ifelse(row_number() == 1, 1, 0))
+
+# create start and stop times 
+naive_df_time <- naive_df_clean %>%
+  group_by(src_subject_id) %>%
+  mutate(
+    time2 = as.numeric(ifelse(first_record_flag == 1, 0, as.numeric(difftime(end_date, start_date, units = 'days')))),
+    time2 = cumsum(time2),
+    time1 = as.numeric(ifelse(first_record_flag == 1, 0, lag(time2)))
+  )
+
+# ensure stop time > start time
+check = naive_df_time %>% select(src_subject_id, eventname, start_date, end_date, time1, time2)
+checkID = check %>% filter(time1<0 | time2<0 | time2<time1) %>% select(src_subject_id)
+checkID = unique(checkID)
+naive_df_time2 <- naive_df_time %>% filter(!(src_subject_id %in% checkID$src_subject_id))
+
+# remove first record for each participant
+df_final <- naive_df_time2 %>% filter(first_record_flag != 1)
+
+# convert age from months to years
+df_final$age2 <- df_final$age / 12
+
+# remove participant w/ no interview date data from earlier
+df_final <- df_final %>% filter(src_subject_id != 'NDAR_INV749XW1TD')
+```
+
+```{r time issues}
+weird_times <- naive_df_time %>% filter(time1<0 | time2<0 | time2<time1) %>% select(src_subject_id, eventname, date, start_date, end_date, time1, time2)
+table(weird_times$eventname)
+length(unique(weird_times$src_subject_id)) # 33 participants
+
+weird_dates <- naive_df_time %>%
+  filter(eventname %in% c('2_year_follow_up_y_arm_1', '30_month_follow_up_arm_1', '3_year_follow_up_y_arm_1')) %>%
+  group_by(src_subject_id) %>%
+  reframe(
+    date_2y = date[eventname == '2_year_follow_up_y_arm_1'],
+    date_30m = date[eventname == '30_month_follow_up_arm_1'],
+    date_3y = date[eventname == '3_year_follow_up_y_arm_1']
+  ) %>%
+  mutate('date30m-date_2y' = date_30m-date_2y,
+         'date_3y-date30m' = date_3y-date_30m) %>%
+  filter(date_2y > date_30m | date_30m > date_3y)
+weird_dates # 27 participants
+```
+
+
+```{r interview delays}
+# 560 observations (from 527 participants) where the time between interviews exceeds 9 months
+delays <- df_final %>% filter(time2-time1 > 270) %>% select(src_subject_id, eventname, date, time1, time2)
+length(unique(delays$src_subject_id))
+table(delays$eventname)
+
+# 63 participants has year 4 follow-up after more than 4 years
+over_4_years <- df_final %>% filter(time2 >= 1280) %>% mutate(diff = time2-time1) %>% select(src_subject_id, eventname, first_drink, diff, date, time1, time2)
+over_4_years_full_obs <- df_final %>% filter(src_subject_id %in% over_4_years$src_subject_id) %>% mutate(diff = time2-time1) %>% select(src_subject_id, first_drink, eventname, date, time1, time2, diff)
+sum(over_4_years$src_subject_id %in% unique(delays$src_subject_id)) # 43 are in df delays
+```
+
+
+```{r model}
+model <- coxph(Surv(time1, time2, first_drink) ~ age2 + sex + race + hispanic + income + mother_alc + father_alc + pos_expectancies + neg_expectancies + alc_rules + alc_availability + peer_use + neighborhood_safety + fam_conflict, data = df_final)
+summary(model)
+```
+
+```{r CI plot}
+survfit_obj <- survfit(model)
+
+plot(survfit_obj,
+     fun = 'event',
+     ylim = c(0, 0.2),
+     xlab = 'Months from study baseline',
+     ylab = 'Cumulative incidence of alcohol initiation',
+     xscale = 30.44)
+```
+
+
+```{r table 1}
+# pull baseline demographics
+baseline_dat <- df_final %>%
+  group_by(src_subject_id) %>%
+  summarize(
+    age_b = first(age/12),
+    sex_b = first(sex),
+    race_b = first(race),
+    hispanic_b = first(hispanic),
+    income_b = first(income),
+    parent_alc_b = first(parent_alc),
+    pos_exp = first(pos_expectancies, na_rm = T),
+    neg_exp = first(neg_expectancies, na_rm = T),
+    safety = first(neighborhood_safety),
+    fam_conflict = first(fam_conflict),
+    avail_b = first(alc_availability),
+    peer_alc_yr1 = first(peer_use, na_rm = T),
+    rules_b = first(alc_rules)
+  )
+
+# track if participant ever drank
+drink_indicator <- df_final %>%
+  group_by(src_subject_id) %>%
+  summarize(
+    ever_drink = ifelse(any(first_drink == 1), 1, 0)
+  )
+
+table1_df <- baseline_dat %>%
+  filter(src_subject_id %in% naive_df$src_subject_id) %>%
+  full_join(drink_indicator, by = 'src_subject_id')
+
+
+# stratification vars
+strata <- c(
+    split(table1_df, ~ever_drink),
+    list('All' = table1_df)
+  )
+
+# demographic vars
+labels <- list(
+    variables = list(
+      age_b = 'age at baseline',
+      sex_b = 'sex',
+      race_b = 'race',
+      hispanic_b = 'hispanic',
+      income_b = 'income at baseline',
+      parent_alc_b = 'parental alc abuse at baseline',
+      pos_exp = 'mean positive expectancy score at yr 1',
+      neg_exp = 'mean negative expectancy score at yr 1',
+      safety = 'neighborhood safety at baseline',
+      fam_conflict = 'mean fam conflict score at baseline',
+      avail_b = 'alc availability at baseline',
+      peer_alc_yr1 = 'peer use at year 1',
+      rules_b = 'alc rules at baseline'
+    ), 
+    groups = list('Initated alcohol use', '')
+  )
+
+groups <- c(2, 1)
+
+# create table 1
+table_one <- table1(strata,
+                    labels,
+                    groupspan = groups)
+table_one
+```
+```{r correlations}
+numeric_vars <- c('age_b', 'pos_exp', 'neg_exp', 'safety', 'fam_conflict')
+categorical_vars <- c('sex_b', 'race_b', 'hispanic_b', 'income_b', 'parent_alc_b', 'avail_b', 'peer_alc_yr1', 'rules_b')
+
+t_test_results <- map_df(numeric_vars, function(var) {
+  ttest <- t.test(table1_df[[var]] ~ table1_df$ever_drink)
+  tibble(
+    variable = var,
+    p_value = ttest$p.value,
+    test_type = 't-test'
+  )
+})
+
+cat_test_results <- map_df(categorical_vars, function(var) {
+  tab <- table(table1_df[[var]], table1_df$ever_drink)
+  p_val <- tryCatch({
+    if (any(tab < 5)) {
+      fisher.test(tab)$p.value
+    } else {
+      chisq.test(tab)$p.value
+    }
+  }, error = function(e) NA)
+
+  tibble(
+    variable = var,
+    p_value = p_val,
+    test_type = ifelse(any(tab < 5), 'Fisher', 'Chi-squared')
+  )
+})
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
